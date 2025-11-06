@@ -855,11 +855,7 @@ export class ChatGPT {
         return null;
       }
 
-      await copyButton.hover({ timeout: 2000 }).catch(() => {});
-      await copyButton.click({ timeout: 3000 });
-      await this.page.waitForTimeout(200);
-
-      const clip = await this.page.evaluate(async () => {
+      const before = await this.page.evaluate(async () => {
         try {
           return await navigator.clipboard.readText();
         } catch (error) {
@@ -867,8 +863,30 @@ export class ChatGPT {
         }
       });
 
+      await copyButton.hover({ timeout: 2000 }).catch(() => {});
+      await copyButton.click({ timeout: 3000 });
+
+      const timeout = Date.now() + 3000;
+      let clip: string | null = null;
+
+      while (Date.now() < timeout) {
+        clip = await this.page.evaluate(async () => {
+          try {
+            return await navigator.clipboard.readText();
+          } catch (error) {
+            return null;
+          }
+        });
+
+        if (clip && clip.trim().length > 0 && clip !== before) {
+          break;
+        }
+
+        await this.page.waitForTimeout(150);
+      }
+
       if (!clip || clip.trim().length === 0) {
-        this.debug('Clipboard returned empty content');
+        this.debug('Clipboard returned empty or unchanged content after copy');
         return null;
       }
 
