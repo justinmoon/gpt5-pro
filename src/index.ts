@@ -29,7 +29,11 @@ program
       await chatgpt.initialize();
       await chatgpt.loginInteractive();
       await chatgpt.close();
-      console.log('\n✓ Login successful! You can now use the tool in headless mode.');
+      if (options.verbose) {
+        console.log('\n✓ Login successful! You can now use the tool in headless mode.');
+      } else {
+        console.log('Login successful.');
+      }
       process.exit(0);
     } catch (error) {
       console.error('❌ Error:', error instanceof Error ? error.message : error);
@@ -93,9 +97,13 @@ program
 
       const response = await chatgpt.query(prompt);
 
-      console.log('\n--- Response ---\n');
-      console.log(response);
-      console.log('\n');
+      if (options.verbose) {
+        console.log('\n--- Response ---\n');
+        console.log(response);
+        console.log('\n');
+      } else {
+        console.log(response);
+      }
 
       await chatgpt.close();
       process.exit(0);

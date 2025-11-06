@@ -53,6 +53,9 @@ export class ChatGPT {
   }
 
   private log(message: string, level: 'info' | 'warn' | 'error' = 'info') {
+    if (!this.verbose && level === 'info') {
+      return;
+    }
     const prefix = level === 'error' ? '❌' : level === 'warn' ? '⚠️' : '✓';
     console.log(`${prefix} ${message}`);
   }
