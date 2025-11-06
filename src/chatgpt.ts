@@ -108,7 +108,13 @@ export class ChatGPT {
       contextOptions.storageState = statePath;
     }
 
-    this.context = await this.browser.newContext(contextOptions);
+    this.context = await this.browser.newContext({
+      ...contextOptions,
+      permissions: [
+        'clipboard-read',
+        'clipboard-write',
+      ],
+    });
     this.page = await this.context.newPage();
 
     await this.page.addInitScript(() => {
@@ -706,6 +712,11 @@ export class ChatGPT {
           throw new Error('Empty response received');
         }
 
+        const copied = await this.copyAssistantResponse(lastMessage);
+        if (copied && copied.trim().length > 0) {
+          return copied.trim();
+        }
+
         return trimmedText;
       }
     }
@@ -831,5 +842,40 @@ export class ChatGPT {
     const requiresLongTimeout = longRunningModels.some((name) => normalizedModel.includes(name));
     const minimum = requiresLongTimeout ? 30 * 60 * 1000 : 0; // 30 minutes
     return Math.max(base, minimum);
+  }
+
+  private async copyAssistantResponse(message: Locator): Promise<string | null> {
+    if (!this.page) return null;
+
+    try {
+      const copyButton = message.locator('[data-testid="copy-turn-action-button"]').first();
+
+      if ((await copyButton.count()) === 0) {
+        this.debug('Copy button not found for assistant message');
+        return null;
+      }
+
+      await copyButton.hover({ timeout: 2000 }).catch(() => {});
+      await copyButton.click({ timeout: 3000 });
+      await this.page.waitForTimeout(200);
+
+      const clip = await this.page.evaluate(async () => {
+        try {
+          return await navigator.clipboard.readText();
+        } catch (error) {
+          return null;
+        }
+      });
+
+      if (!clip || clip.trim().length === 0) {
+        this.debug('Clipboard returned empty content');
+        return null;
+      }
+
+      return clip;
+    } catch (error) {
+      this.debug(`Failed to copy assistant response: ${String(error)}`);
+      return null;
+    }
   }
 }
