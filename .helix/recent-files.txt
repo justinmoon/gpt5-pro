@@ -1,0 +1,2 @@
+"/Users/justin/code/gpt5-pro/src/index.ts"
+"/Users/justin/code/gpt5-pro/src/chatgpt.ts"
