@@ -848,12 +848,29 @@ export class ChatGPT {
     if (!this.page) return null;
 
     try {
-      const copyButton = message.locator('[data-testid="copy-turn-action-button"]').first();
+      await message.scrollIntoViewIfNeeded();
+      await message.hover({ timeout: 2000 }).catch(() => {});
+      await this.page.waitForTimeout(150);
+
+      let copyButton = message.locator('[data-testid="copy-turn-action-button"]').first();
+
+      if ((await copyButton.count()) === 0) {
+        const messageId = await message.getAttribute('data-message-id');
+        if (messageId) {
+          copyButton = this.page.locator(`[data-testid="copy-turn-action-button"][data-message-id="${messageId}"]`).first();
+        }
+      }
+
+      if ((await copyButton.count()) === 0) {
+        copyButton = this.page.locator('[data-testid="copy-turn-action-button"]:visible').last();
+      }
 
       if ((await copyButton.count()) === 0) {
         this.debug('Copy button not found for assistant message');
         return null;
       }
+
+      await copyButton.waitFor({ state: 'visible', timeout: 2000 }).catch(() => {});
 
       const before = await this.page.evaluate(async () => {
         try {
