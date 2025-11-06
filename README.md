@@ -17,7 +17,6 @@ Script the official ChatGPT UI so your own agents can tap GPT-5 Pro as a reliabl
    ```bash
    npm start -- "Find the root cause of this TypeScript type error..."
    ```
-
 Useful flags:
 - `-p <profile>` keeps separate sessions for different accounts.
 - `-v` forces a visible browser when you need to watch a run.

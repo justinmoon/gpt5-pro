@@ -4,6 +4,8 @@ import * as fs from 'fs';
 import * as path from 'path';
 import * as os from 'os';
 import * as readline from 'readline';
+import { spawn } from 'child_process';
+import { createRequire } from 'module';
 
 export interface ChatGPTOptions {
   headless?: boolean;
@@ -71,6 +73,8 @@ export class ChatGPT {
       fs.mkdirSync(this.stateDir, { recursive: true });
     }
 
+    await this.ensureBrowserInstalled();
+
     this.debug(`Profile: ${this.profile}, State dir: ${this.stateDir}`);
 
     // Configure Playwright launch options
@@ -119,6 +123,79 @@ export class ChatGPT {
 
     await this.page.addInitScript(() => {
       Object.defineProperty(navigator, 'webdriver', { get: () => undefined });
+    });
+  }
+
+  private async ensureBrowserInstalled() {
+    let executablePath = '';
+    try {
+      executablePath = chromium.executablePath();
+    } catch (error) {
+      this.debug(`chromium.executablePath() threw: ${error}`);
+    }
+
+    if (executablePath && fs.existsSync(executablePath)) {
+      this.debug(`Chromium executable found at ${executablePath}`);
+      return;
+    }
+
+    const message = 'Playwright Chromium browser not found; installing (first run may take a moment)...';
+    if (this.verbose) {
+      this.log(message, 'info');
+    } else {
+      console.log(`⬇️  ${message}`);
+    }
+
+    await this.installBrowserBinary();
+
+    executablePath = chromium.executablePath();
+    if (!executablePath || !fs.existsSync(executablePath)) {
+      throw new Error('Unable to install Playwright Chromium browser automatically. Please run "npx playwright install chromium" and retry.');
+    }
+
+    if (!this.verbose) {
+      console.log('✅ Playwright Chromium browser installed.');
+    } else {
+      this.log('Playwright Chromium browser installed.', 'info');
+    }
+  }
+
+  private async installBrowserBinary() {
+    const require = createRequire(import.meta.url);
+    const playwrightPackageDir = path.dirname(require.resolve('playwright/package.json'));
+    const cliPath = path.join(playwrightPackageDir, 'cli.js');
+
+    await new Promise<void>((resolve, reject) => {
+      const child = spawn(process.execPath, [cliPath, 'install', 'chromium'], {
+        stdio: this.verbose ? 'inherit' : 'pipe',
+        env: process.env,
+      });
+
+      let stderr = '';
+
+      if (!this.verbose) {
+        child.stdout?.on('data', (data) => {
+          const message = data.toString();
+          this.debug(`playwright install stdout: ${message}`);
+        });
+        child.stderr?.on('data', (data) => {
+          const message = data.toString();
+          stderr += message;
+          this.debug(`playwright install stderr: ${message}`);
+        });
+      }
+
+      child.on('error', (error) => {
+        reject(error);
+      });
+
+      child.on('close', (code) => {
+        if (code === 0) {
+          resolve();
+        } else {
+          reject(new Error(stderr.trim() || `playwright install exited with code ${code}`));
+        }
+      });
     });
   }
 
