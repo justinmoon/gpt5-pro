@@ -636,29 +636,32 @@ export class ChatGPT {
 
     this.log('Waiting for response...');
 
-    // Wait for new assistant message to appear
-    let attempt = 0;
-    while (attempt < this.retries) {
-      try {
-        await this.page.waitForSelector('[data-message-author-role="assistant"]', {
-          timeout: this.timeout,
-          state: 'attached'
-        });
+    const responseTimeout = this.getResponseTimeout();
+    const pollIntervalMs = 2000;
+    const responseDeadline = Date.now() + responseTimeout;
 
-        const currentCount = await this.page.locator('[data-message-author-role="assistant"]').count();
-        if (currentCount > initialMessages) {
-          this.debug(`New message appeared (${currentCount} > ${initialMessages})`);
-          break;
-        }
-
-        await this.page.waitForTimeout(1000);
-        attempt++;
-      } catch (error) {
-        if (attempt >= this.retries - 1) {
-          throw new Error(`Response timeout after ${this.timeout}ms`);
-        }
-        attempt++;
+    while (Date.now() < responseDeadline) {
+      const currentCount = await this.page.locator('[data-message-author-role="assistant"]').count();
+      if (currentCount > initialMessages) {
+        this.debug(`New assistant message detected (${currentCount} > ${initialMessages})`);
+        break;
       }
+
+      if (this.verbose) {
+        const thinking = await this.page.evaluate(() =>
+          document.body.innerText.includes('Pro thinking') || document.body.innerText.includes('Thinking')
+        );
+        if (thinking) {
+          this.log('Assistant is still thinking...', 'info');
+        }
+      }
+
+      await this.page.waitForTimeout(pollIntervalMs);
+    }
+
+    const confirmedCount = await this.page.locator('[data-message-author-role="assistant"]').count();
+    if (confirmedCount <= initialMessages) {
+      throw new Error(`Response timeout after ${responseTimeout}ms`);
     }
 
     // Wait for response to stabilize
@@ -666,39 +669,48 @@ export class ChatGPT {
     let stableCount = 0;
     const requiredStableChecks = 3;
 
-    while (stableCount < requiredStableChecks) {
-      await this.page.waitForTimeout(1000);
+    while (Date.now() < responseDeadline) {
+      await this.page.waitForTimeout(2000);
 
       const messages = await this.page.locator('[data-message-author-role="assistant"]').all();
+      if (messages.length === 0) {
+        this.debug('Assistant message collection empty, waiting...');
+        continue;
+      }
+
       const lastMessage = messages[messages.length - 1];
+      const currentText = await lastMessage.evaluate((node) => (node as HTMLElement).innerText || '');
+      const trimmedText = currentText.trim();
+      const currentLength = trimmedText.length;
 
-      if (!lastMessage) {
-        throw new Error('No response received');
-      }
-
-      const currentText = await lastMessage.textContent();
-      const currentLength = currentText?.length || 0;
-
-      if (currentLength === previousLength && currentLength > 0) {
-        stableCount++;
-      } else {
+      if (currentLength === 0) {
+        if (this.verbose) {
+          this.log('Assistant response not ready yet, continuing to wait...', 'info');
+        }
+        previousLength = 0;
         stableCount = 0;
-        previousLength = currentLength;
+        continue;
       }
 
-      this.debug(`Response length: ${currentLength} (stable: ${stableCount}/${requiredStableChecks})`);
+      if (currentLength === previousLength) {
+        stableCount++;
+        this.debug(`Response length stable at ${currentLength} characters (${stableCount}/${requiredStableChecks})`);
+      } else {
+        this.debug(`Response length changed (${previousLength} -> ${currentLength})`);
+        previousLength = currentLength;
+        stableCount = 0;
+      }
+
+      if (stableCount >= requiredStableChecks) {
+        if (trimmedText.length === 0) {
+          throw new Error('Empty response received');
+        }
+
+        return trimmedText;
+      }
     }
 
-    // Extract final response
-    const messages = await this.page.locator('[data-message-author-role="assistant"]').all();
-    const lastMessage = messages[messages.length - 1];
-    const response = await lastMessage.textContent();
-
-    if (!response || response.trim().length === 0) {
-      throw new Error('Empty response received');
-    }
-
-    return response.trim();
+    throw new Error(`Response timeout after ${responseTimeout}ms`);
   }
 
   async close() {
@@ -803,5 +815,21 @@ export class ChatGPT {
     }
 
     return false;
+  }
+
+  private getResponseTimeout(): number {
+    const base = this.timeout;
+    const longRunningModels = [
+      'gpt-5',
+      'gpt5',
+      'gpt-5-pro',
+      'gpt5-pro',
+      'gpt-5-thinking',
+      'gpt5-thinking'
+    ];
+    const normalizedModel = this.model.toLowerCase().replace(/[\s_]+/g, '-');
+    const requiresLongTimeout = longRunningModels.some((name) => normalizedModel.includes(name));
+    const minimum = requiresLongTimeout ? 30 * 60 * 1000 : 0; // 30 minutes
+    return Math.max(base, minimum);
   }
 }
