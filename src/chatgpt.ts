@@ -1,4 +1,4 @@
-import { chromium, Page, Browser, BrowserContext, Locator } from 'playwright';
+import type { Page, Browser, BrowserContext, Locator } from 'playwright';
 import { getCredentials } from './credentials.js';
 import * as fs from 'fs';
 import * as path from 'path';
@@ -41,6 +41,7 @@ export class ChatGPT {
   private timeout: number;
   private retries: number;
   private verbose: boolean;
+  private playwright: typeof import('playwright') | null = null;
 
   private modelDefinitions: Record<string, ModelDefinition> = this.buildModelDefinitions();
 
@@ -93,6 +94,7 @@ export class ChatGPT {
     // Let Playwright use its own downloaded browsers - more reliable than Nix browsers on macOS
     this.debug(`Launching browser (headless: ${this.headless})...`);
 
+    const { chromium } = await this.getPlaywright();
     try {
       this.browser = await chromium.launch(launchOptions);
       this.debug('Browser launched successfully');
@@ -127,6 +129,10 @@ export class ChatGPT {
   }
 
   private async ensureBrowserInstalled() {
+    const browserCacheDir = this.prepareBrowserCacheDir();
+    this.debug(`Using Playwright browser cache at ${browserCacheDir}`);
+
+    const { chromium } = await this.getPlaywright();
     let executablePath = '';
     try {
       executablePath = chromium.executablePath();
@@ -197,6 +203,77 @@ export class ChatGPT {
         }
       });
     });
+  }
+
+  private prepareBrowserCacheDir(): string {
+    const envPath = process.env.PLAYWRIGHT_BROWSERS_PATH;
+    if (envPath) {
+      const resolved = path.resolve(envPath);
+      if (this.isWritableDirectory(resolved)) {
+        try {
+          fs.mkdirSync(resolved, { recursive: true });
+        } catch (error) {
+          this.debug(`Failed to ensure browser cache directory exists (${resolved}): ${error}`);
+        }
+        process.env.PLAYWRIGHT_BROWSERS_PATH = resolved;
+        return resolved;
+      }
+      this.log(
+        `Configured PLAYWRIGHT_BROWSERS_PATH is not writable (${resolved}). Falling back to a user cache directory.`,
+        'warn',
+      );
+    }
+
+    const fallback = this.defaultBrowserCacheDir();
+    try {
+      fs.mkdirSync(fallback, { recursive: true });
+    } catch (error) {
+      this.debug(`Failed to create fallback browser cache directory (${fallback}): ${error}`);
+    }
+    process.env.PLAYWRIGHT_BROWSERS_PATH = fallback;
+    return fallback;
+  }
+
+  private isWritableDirectory(dir: string): boolean {
+    try {
+      fs.mkdirSync(dir, { recursive: true });
+    } catch (error) {
+      this.debug(`mkdir for ${dir} failed: ${error}`);
+      return false;
+    }
+
+    try {
+      fs.accessSync(dir, fs.constants.W_OK);
+      return true;
+    } catch (error) {
+      this.debug(`access check for ${dir} failed: ${error}`);
+      return false;
+    }
+  }
+
+  private defaultBrowserCacheDir(): string {
+    if (process.platform === 'darwin') {
+      return path.join(os.homedir(), 'Library', 'Caches', 'ms-playwright');
+    }
+
+    if (process.platform === 'win32') {
+      const base =
+        process.env.LOCALAPPDATA ??
+        path.join(os.homedir(), 'AppData', 'Local');
+      return path.join(base, 'ms-playwright');
+    }
+
+    const base =
+      process.env.XDG_CACHE_HOME ??
+      path.join(os.homedir(), '.cache');
+    return path.join(base, 'ms-playwright');
+  }
+
+  private async getPlaywright() {
+    if (!this.playwright) {
+      this.playwright = await import('playwright');
+    }
+    return this.playwright;
   }
 
   async loginInteractive() {
