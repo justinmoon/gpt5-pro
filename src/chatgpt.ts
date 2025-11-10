@@ -7,6 +7,11 @@ import * as readline from 'readline';
 import { spawn } from 'child_process';
 import { createRequire } from 'module';
 
+const DEFAULT_MAX_PROMPT_CHARS = 765_000;
+const DEFAULT_MAX_PROMPT_TOKENS = 127_000;
+const COMPOSER_ERROR_PATTERN =
+  /(message (?:is|was) too long|too long|token limit|max(?:imum)? length|character limit|submit something shorter)/i;
+
 export interface ChatGPTOptions {
   headless?: boolean;
   profile?: string;
@@ -14,6 +19,7 @@ export interface ChatGPTOptions {
   timeout?: number;
   retries?: number;
   verbose?: boolean;
+  maxPromptChars?: number;
 }
 
 interface ModelPreStep {
@@ -41,6 +47,8 @@ export class ChatGPT {
   private timeout: number;
   private retries: number;
   private verbose: boolean;
+  private maxPromptChars: number;
+  private approxPromptTokenLimit: number;
   private playwright: typeof import('playwright') | null = null;
 
   private modelDefinitions: Record<string, ModelDefinition> = this.buildModelDefinitions();
@@ -52,6 +60,11 @@ export class ChatGPT {
     this.timeout = options.timeout ?? 60000;
     this.retries = options.retries ?? 2;
     this.verbose = options.verbose ?? false;
+    this.maxPromptChars = options.maxPromptChars ?? DEFAULT_MAX_PROMPT_CHARS;
+    this.approxPromptTokenLimit = Math.max(
+      1,
+      Math.round((DEFAULT_MAX_PROMPT_TOKENS * this.maxPromptChars) / DEFAULT_MAX_PROMPT_CHARS)
+    );
     this.stateDir = path.join(os.homedir(), '.gpt5-pro-cli', this.profile);
   }
 
@@ -66,6 +79,91 @@ export class ChatGPT {
   private debug(message: string) {
     if (this.verbose) {
       console.log(`[DEBUG] ${message}`);
+    }
+  }
+
+  private estimateTokenCount(text: string): number {
+    // Rough heuristic (~4 characters per token for English-like text)
+    return Math.ceil(text.length / 4);
+  }
+
+  private validatePromptLength(prompt: string) {
+    if (prompt.length <= this.maxPromptChars) {
+      return;
+    }
+
+    const approxTokens = this.estimateTokenCount(prompt);
+    throw new Error(
+      `Prompt is ${prompt.length.toLocaleString()} characters (~${approxTokens.toLocaleString()} tokens) which exceeds ` +
+        `the observed ChatGPT UI limit (~${this.maxPromptChars.toLocaleString()} characters / ~${this.approxPromptTokenLimit.toLocaleString()} tokens). ` +
+        'Please shorten or split the request.'
+    );
+  }
+
+  private async detectComposerError(): Promise<string | null> {
+    if (!this.page) return null;
+
+    try {
+      return await this.page.evaluate((pattern) => {
+        const regex = new RegExp(pattern, 'i');
+        const candidates = new Set<Element>();
+        const candidateSelectors = [
+          '[role="alert"]',
+          '[data-testid*="toast"]',
+          '[data-theme="error"]',
+          '.text-destructive',
+          '[data-tooltip]',
+          '[data-state="error"]',
+          '[aria-live]',
+        ];
+
+        candidateSelectors.forEach((selector) => {
+          document.querySelectorAll(selector).forEach((node) => candidates.add(node as Element));
+        });
+
+        const composer = document.querySelector('[data-testid="composer"]');
+        if (composer) {
+          composer.querySelectorAll('[role="alert"], [data-state="error"], .text-destructive').forEach((node) => {
+            candidates.add(node as Element);
+          });
+        }
+
+        for (const node of candidates) {
+          const text = node.textContent?.trim();
+          if (!text) continue;
+          if (regex.test(text)) {
+            return text;
+          }
+        }
+
+        const sendButton = document.querySelector('[data-testid="send-button"], button[aria-label*="Send"]');
+        const ariaLabel = sendButton?.getAttribute('aria-label');
+        if (ariaLabel && regex.test(ariaLabel)) {
+          return ariaLabel;
+        }
+
+        const tooltips = document.querySelectorAll('[role="tooltip"], [data-state="delayed-open"]');
+        for (const tooltip of Array.from(tooltips)) {
+          const text = tooltip.textContent?.trim();
+          if (text && regex.test(text)) {
+            return text;
+          }
+        }
+
+        return null;
+      }, COMPOSER_ERROR_PATTERN.source);
+    } catch (error) {
+      this.debug(`detectComposerError failed: ${error}`);
+      return null;
+    }
+  }
+
+  private async failIfComposerError(context: string = 'Prompt submission'): Promise<void> {
+    const errorText = await this.detectComposerError();
+    if (errorText) {
+      throw new Error(
+        `${context} blocked by ChatGPT UI: ${errorText} (observed limit ≈${this.maxPromptChars.toLocaleString()} characters / ~${this.approxPromptTokenLimit.toLocaleString()} tokens).`
+      );
     }
   }
 
@@ -775,6 +873,7 @@ export class ChatGPT {
 
   async query(prompt: string): Promise<string> {
     if (!this.page) throw new Error('Browser not initialized');
+    this.validatePromptLength(prompt);
 
     // Select model before querying
     await this.selectModel();
@@ -793,6 +892,7 @@ export class ChatGPT {
     await this.page.fill(inputSelector, prompt);
     await this.page.waitForTimeout(500);
     await this.page.keyboard.press('Enter');
+    await this.failIfComposerError('Prompt submission');
 
     this.log('Waiting for response...');
 
@@ -801,6 +901,8 @@ export class ChatGPT {
     const responseDeadline = Date.now() + responseTimeout;
 
     while (Date.now() < responseDeadline) {
+      await this.failIfComposerError('Prompt submission');
+
       const currentCount = await this.page.locator('[data-message-author-role="assistant"]').count();
       if (currentCount > initialMessages) {
         this.debug(`New assistant message detected (${currentCount} > ${initialMessages})`);
@@ -830,6 +932,7 @@ export class ChatGPT {
     const requiredStableChecks = 3;
 
     while (Date.now() < responseDeadline) {
+      await this.failIfComposerError('Response generation');
       await this.page.waitForTimeout(2000);
 
       const messages = await this.page.locator('[data-message-author-role="assistant"]').all();
