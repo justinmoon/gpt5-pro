@@ -13,17 +13,22 @@
   "bin": {
     "gpt5": "./dist/index.js"
   },
-  "keywords": ["chatgpt", "cli", "automation"],
+  "keywords": [
+    "chatgpt",
+    "cli",
+    "automation"
+  ],
   "author": "",
   "license": "MIT",
   "dependencies": {
-    "playwright": "^1.40.0",
+    "@dqbd/tiktoken": "^1.0.22",
+    "commander": "^11.1.0",
     "dotenv": "^16.3.1",
-    "commander": "^11.1.0"
+    "playwright": "^1.40.0"
   },
   "devDependencies": {
     "@types/node": "^20.10.0",
-    "typescript": "^5.3.0",
-    "tsx": "^4.7.0"
+    "tsx": "^4.7.0",
+    "typescript": "^5.3.0"
   }
 }

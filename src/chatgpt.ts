@@ -6,9 +6,10 @@ import * as os from 'os';
 import * as readline from 'readline';
 import { spawn } from 'child_process';
 import { createRequire } from 'module';
+import { countTokens } from './tokenizer.js';
 
 const DEFAULT_MAX_PROMPT_CHARS = 765_000;
-const DEFAULT_MAX_PROMPT_TOKENS = 127_000;
+const DEFAULT_MAX_PROMPT_TOKENS = 127_635;
 const COMPOSER_ERROR_PATTERN =
   /(message (?:is|was) too long|too long|token limit|max(?:imum)? length|character limit|submit something shorter)/i;
 
@@ -20,6 +21,7 @@ export interface ChatGPTOptions {
   retries?: number;
   verbose?: boolean;
   maxPromptChars?: number;
+  maxPromptTokens?: number;
 }
 
 interface ModelPreStep {
@@ -48,7 +50,7 @@ export class ChatGPT {
   private retries: number;
   private verbose: boolean;
   private maxPromptChars: number;
-  private approxPromptTokenLimit: number;
+  private maxPromptTokens: number;
   private playwright: typeof import('playwright') | null = null;
 
   private modelDefinitions: Record<string, ModelDefinition> = this.buildModelDefinitions();
@@ -61,10 +63,7 @@ export class ChatGPT {
     this.retries = options.retries ?? 2;
     this.verbose = options.verbose ?? false;
     this.maxPromptChars = options.maxPromptChars ?? DEFAULT_MAX_PROMPT_CHARS;
-    this.approxPromptTokenLimit = Math.max(
-      1,
-      Math.round((DEFAULT_MAX_PROMPT_TOKENS * this.maxPromptChars) / DEFAULT_MAX_PROMPT_CHARS)
-    );
+    this.maxPromptTokens = options.maxPromptTokens ?? DEFAULT_MAX_PROMPT_TOKENS;
     this.stateDir = path.join(os.homedir(), '.gpt5-pro-cli', this.profile);
   }
 
@@ -82,21 +81,29 @@ export class ChatGPT {
     }
   }
 
-  private estimateTokenCount(text: string): number {
-    // Rough heuristic (~4 characters per token for English-like text)
-    return Math.ceil(text.length / 4);
-  }
-
   private validatePromptLength(prompt: string) {
-    if (prompt.length <= this.maxPromptChars) {
+    const charCount = prompt.length;
+    const tokenCount = countTokens(prompt);
+
+    if (charCount <= this.maxPromptChars && tokenCount <= this.maxPromptTokens) {
       return;
     }
 
-    const approxTokens = this.estimateTokenCount(prompt);
+    const overLimits: string[] = [];
+    if (charCount > this.maxPromptChars) {
+      overLimits.push(
+        `${charCount.toLocaleString()} characters (limit ~${this.maxPromptChars.toLocaleString()} characters)`
+      );
+    }
+    if (tokenCount > this.maxPromptTokens) {
+      overLimits.push(
+        `${tokenCount.toLocaleString()} tokens (limit ~${this.maxPromptTokens.toLocaleString()} tokens)`
+      );
+    }
+
+    const details = overLimits.join(' and ');
     throw new Error(
-      `Prompt is ${prompt.length.toLocaleString()} characters (~${approxTokens.toLocaleString()} tokens) which exceeds ` +
-        `the observed ChatGPT UI limit (~${this.maxPromptChars.toLocaleString()} characters / ~${this.approxPromptTokenLimit.toLocaleString()} tokens). ` +
-        'Please shorten or split the request.'
+      `Prompt exceeds ChatGPT's composer limit: ${details}. Please shorten or split the request before retrying.`
     );
   }
 
@@ -162,7 +169,7 @@ export class ChatGPT {
     const errorText = await this.detectComposerError();
     if (errorText) {
       throw new Error(
-        `${context} blocked by ChatGPT UI: ${errorText} (observed limit ≈${this.maxPromptChars.toLocaleString()} characters / ~${this.approxPromptTokenLimit.toLocaleString()} tokens).`
+        `${context} blocked by ChatGPT UI: ${errorText} (observed limit ≈${this.maxPromptChars.toLocaleString()} characters / ~${this.maxPromptTokens.toLocaleString()} tokens).`
       );
     }
   }
